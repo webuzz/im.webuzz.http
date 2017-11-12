@@ -10,6 +10,8 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.zip.GZIPInputStream;
 
+import net.sf.j2s.ajax.SimpleSerializable;
+
 // TODO: Support chunked gzip encoding stream. Maybe we need to use jzlib
 public class HttpResponseDecoder implements ProtocolDecoder {
 
@@ -54,6 +56,8 @@ public class HttpResponseDecoder implements ProtocolDecoder {
 	private boolean fullPacket;
 	private int dataSent = -1;
 	
+	private boolean plainSimple;
+	
 	private boolean keepRawData;
 	private ByteArrayOutputStream rawData;
 	
@@ -90,6 +94,14 @@ public class HttpResponseDecoder implements ProtocolDecoder {
 	public boolean isFullPacket() {
 		return fullPacket;
 	}
+	
+	public boolean isPlainSimple() {
+		return plainSimple;
+	}
+
+	public void setPlainSimple(boolean plainSimple) {
+		this.plainSimple = plainSimple;
+	}
 
 	public void setFullPacket(boolean fullPacket) {
 		this.fullPacket = fullPacket;
@@ -124,6 +136,7 @@ public class HttpResponseDecoder implements ProtocolDecoder {
 		header = true;
 		contentLength = 0;
 		fullRequest = false;
+		plainSimple = false;
 		dataSent = -1;
 		gzipped = false;
 		chunking = false;
@@ -149,6 +162,48 @@ public class HttpResponseDecoder implements ProtocolDecoder {
 	}
 	
 	public ByteBuffer decode(ByteBuffer bb) {
+		if (plainSimple) {
+			if (!fullPacket) {
+				if (bb == null) {
+					if (dataSent > 0) {
+						return null;
+					}
+					return ByteBuffer.wrap(dummy);
+				}
+				int availableDataLength = bb.remaining();
+				byte[] data = new byte[availableDataLength];
+				bb.get(data);
+				dataSent = 1;
+				return ByteBuffer.wrap(data);
+			}
+			
+			// Require full packet for plain simple format
+			if (bb == null) {
+				if (baos != null) {
+					int baosSize = baos.size();
+					ByteBuffer response = baosSize == 0 ? ByteBuffer.wrap(dummy) : ungzip(baos.getByteArray(), 0, baosSize);
+					baos = null;
+					dataSent = 1;
+					return response;
+				}
+				if (dataSent >= 0 && fullPacket) {
+					return null; // already sent data packet or dummy packet
+				}
+			}
+			if (baos == null) {
+				baos = new OpenByteArrayOutputStream();
+			}
+			baos.write(bb.array(), bb.arrayOffset(), bb.remaining());
+			if (SimpleSerializable.parseInstance(baos.getByteArray()) == null) {
+				return null;
+			}
+			fullPacket = true;
+			ByteBuffer response = ByteBuffer.wrap(baos.getByteArray(), 0, baos.size());
+			baos = null;
+			dataSent = 1;
+			return response;
+		} // end of plain simple branch
+		
 		if (bb == null) {
 			//closed = true;
 			if (fullPacket && baos != null && !gzipped) {

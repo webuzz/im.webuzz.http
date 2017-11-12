@@ -189,13 +189,17 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 				decoder = r.decoder;
 				decoder.reset();
 				decoder.setFullPacket(!isCometConnection);
+				decoder.setPlainSimple(isDirectSocket);
 				decoder.setKeepHeaders(true);
 				connector = r.connector;
 				connector.setProcessor(this);
+				//System.err.println("Reuse: " + key + " for " + r.url + " to " + this.url);
+				//System.err.println("!" + r.connector.domain + ":: " + r.connector.socket);
 				connectionFinished(connector, true); // send out data
 			} else {
 				decoder = new HttpResponseDecoder();
 				decoder.setFullPacket(!isCometConnection);
+				decoder.setPlainSimple(isDirectSocket);
 				decoder.setKeepHeaders(true);
 				NioSelectorThread st = NioSelectorThread.getNioSelectorThread(group);
 				//NioSelectorThread st = NioSelectorThread.getNioSelectorThread("NIO HTTP " + Math.round(Math.floor(Math.random() * SimpleThreadConfig.simpleCoreThreads + 1)));
@@ -335,6 +339,8 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 
 	@Override
 	public void connectionClosedByRemote() {
+		//System.err.println(": " + request.host + " / " + request.port + " -> " + this.url);
+		
 		if (!closed) {
 			closed = true;
 			if (readyState != 4) {
@@ -373,11 +379,21 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 	}
 	
 	private void connectionFinished(NioConnector sessionMetadata, boolean reusing) {
+		if (request.usingSSL) {
+			return; // wait util handshake finished
+		}
+		sendRequest(sessionMetadata, reusing);
+	}
+
+	protected void sendRequest(NioConnector sessionMetadata, boolean reusing) {
 		readyState = 1;
 		if (onreadystatechange != null) {
 			onreadystatechange.onOpen();
 		}
-		String requestData = generateHttpRequest(reusing);
+		String requestData = content;
+		if (!isDirectSocket) {
+			requestData = generateHttpRequest(reusing);
+		}
 		try {
 			receiving = initializeReceivingMonitor();
 			sessionMetadata.send(requestData.getBytes(ISO_8859_1));
@@ -410,7 +426,7 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 					return true;
 				}
 			}
-			if (0 != maxRedirects) {
+			if (maxRedirects > 0) {
 				maxRedirects--; //Do not support infinite redirect by default!
 				lastDataReceived = 0;
 				
@@ -597,7 +613,7 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 
 	@Override
 	public void sslHandshakeFinished() {
-		
+		sendRequest(connector, false);
 	}
 
 	@Override
