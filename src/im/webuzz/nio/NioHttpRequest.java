@@ -18,7 +18,6 @@ import im.webuzz.nio.INioListener;
 import im.webuzz.nio.NioConnector;
 import im.webuzz.nio.NioSelectorThread;
 import net.sf.j2s.ajax.HttpRequest;
-//import net.sf.j2s.ajax.SimpleThreadConfig;
 
 public class NioHttpRequest extends HttpRequest implements INioListener {
 	
@@ -202,7 +201,6 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 				decoder.setPlainSimple(isDirectSocket);
 				decoder.setKeepHeaders(true);
 				NioSelectorThread st = NioSelectorThread.getNioSelectorThread(group);
-				//NioSelectorThread st = NioSelectorThread.getNioSelectorThread("NIO HTTP " + Math.round(Math.floor(Math.random() * SimpleThreadConfig.simpleCoreThreads + 1)));
 				try {
 					connector = new NioConnector(st, request.host, request.port, request.usingSSL, usingAvailableProxy, decoder, this);
 				} catch (Throwable e) {
@@ -379,7 +377,7 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 	}
 	
 	private void connectionFinished(NioConnector sessionMetadata, boolean reusing) {
-		if (request.usingSSL) {
+		if (request.usingSSL && !reusing) {
 			return; // wait util handshake finished
 		}
 		sendRequest(sessionMetadata, reusing);
