@@ -32,7 +32,7 @@ public class HttpResponseDecoder implements ProtocolDecoder {
 	public int code; 
 	//public String status;
 	public int requestCount;
-	private boolean gzipped;
+	public boolean gzipped;
 	public boolean chunking;
 	public String contentType;
 	private int contentLength;
@@ -469,9 +469,9 @@ public class HttpResponseDecoder implements ProtocolDecoder {
 				if (chunking) { // chunk-encoded HTTP connection
 					if (!chunkedSizeRead) {
 						if (b == '\n') {
-							if (idx - lineBegin - 1 < 0) {
-								System.out.println("Error");
-							}
+							//if (idx - lineBegin - 1 < 0) {
+							//	System.out.println("Error");
+							//}
 							String sizeStr = new String(data, lineBegin, idx - lineBegin - 1);
 							int size = 0;
 							try {
@@ -621,7 +621,7 @@ public class HttpResponseDecoder implements ProtocolDecoder {
 		return null; // Continue reading...
 	}
 
-	private static ByteBuffer ungzip(byte[] responseData, int offset, int length) {
+	public static ByteBuffer ungzip(byte[] responseData, int offset, int length) {
 		OpenByteArrayOutputStream baos = new OpenByteArrayOutputStream();
 		ByteArrayInputStream bais = new ByteArrayInputStream(responseData, offset, length);
 		GZIPInputStream gis = null;

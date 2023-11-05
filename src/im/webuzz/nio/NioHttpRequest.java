@@ -10,13 +10,10 @@ import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
-import im.webuzz.nio.HttpRequestItem;
-import im.webuzz.nio.HttpResponseDecoder;
-import im.webuzz.nio.INioListener;
-import im.webuzz.nio.NioConnector;
-import im.webuzz.nio.NioSelectorThread;
 import net.sf.j2s.ajax.HttpRequest;
 
 public class NioHttpRequest extends HttpRequest implements INioListener {
@@ -31,10 +28,11 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 	private NioConnector connector;
 
 	private StringBuffer dataMutex;
+	private Queue<Integer> callbacks;
 	
 	private boolean failed;
 	private boolean closed;
-	
+	private boolean sent;
 	private boolean usingAvailableProxy;
 	private boolean supportsKeepAlive;
 	
@@ -46,6 +44,8 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 	private String group;
 	
 	private Map<String, String> responseHeaders = new HashMap<String, String>();
+	
+	private byte[] contentBytes;
 	
 	public static boolean isIgnoringLaterUserAgentHeader() {
 		return ignoringLaterUserAgentHeader;
@@ -62,6 +62,7 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 		maxRedirects = 10; //-1; // Do not support infinite redirect by default!
 		lastDataReceived = 0;
 		group = "http";
+		callbacks = new ConcurrentLinkedQueue<Integer>();
 	}
 
 	public NioHttpRequest(boolean usingAvailableProxy) {
@@ -71,6 +72,7 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 		maxRedirects = 10; //-1; // Do not support infinite redirect by default!
 		lastDataReceived = 0;
 		group = "http";
+		callbacks = new ConcurrentLinkedQueue<Integer>();
 	}
 
 	public NioHttpRequest(boolean usingAvailableProxy, boolean supportsKeepAlive) {
@@ -80,6 +82,7 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 		maxRedirects = 10; //-1; // Do not support infinite redirect by default!
 		lastDataReceived = 0;
 		group = "http";
+		callbacks = new ConcurrentLinkedQueue<Integer>();
 	}
 
 	public NioHttpRequest(boolean usingAvailableProxy, boolean supportsKeepAlive, String nioGroup) {
@@ -89,6 +92,7 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 		maxRedirects = 10; //-1; // Do not support infinite redirect by default!
 		lastDataReceived = 0;
 		group = nioGroup;
+		callbacks = new ConcurrentLinkedQueue<Integer>();
 	}
 
 	/**
@@ -153,16 +157,32 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 		return null;
 	}
 
+	public void setCometConnection(boolean isCometConnection) {
+		this.isCometConnection = isCometConnection;
+	}
+
 	@Override
 	public void send(String str) {
+		content = str;
+		sendBytes(str == null ? null : str.getBytes());
+	}
+	public void sendBytes(byte[] bytes) {
 		request = new HttpRequestItem(this.url);
+		if (VerifyUtils.isValidIPv4Address(request.host)) {
+			String hostStr = headers.get("Host");
+			if (hostStr != null && hostStr.length() > 0) {
+				request.host = hostStr;
+			}
+		}
 		boolean loopRedirecting = false;
 		do {
 			loopRedirecting = false;
 			failed = false;
 			closed = false;
+			sent = false;
 			lastDataReceived = 0;
-			content = str;
+			//content = str;
+			contentBytes = bytes;
 			if (!asynchronous) {
 				dataMutex = new StringBuffer();
 			}
@@ -212,6 +232,7 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 						readyState = 4;
 						if (onreadystatechange != null) {
 							onreadystatechange.onLoaded();
+							onreadystatechange = null;
 						}
 					}
 					readyState = 0;
@@ -219,7 +240,7 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 				}
 			}
 			
-			if (!asynchronous) {
+			while (!asynchronous) {
 				synchronized (dataMutex) {
 					if (dataMutex.length() <= 0) {
 						try {
@@ -227,44 +248,67 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 						} catch (InterruptedException e) {
 							e.printStackTrace();
 						}
-						if (dataMutex.length() != 1 && decoder != null && decoder.code != 0) {
-							// Already got HTTP header
-							if (decoder.code / 300 == 1 && dataMutex.length() > 1) {
-								String url = dataMutex.toString();
-								request = new HttpRequestItem(url);
-								if (key.equalsIgnoreCase(request.host + ":" + request.port)) {
-									open("GET", url, false, user, password);
-								} else {
-									open("GET", url, false);
-								}
-								dataMutex.delete(0, dataMutex.length());
-								str = null;
-								loopRedirecting = true;
-							} else  if (lastDataReceived > 0) {
-								long lastRecieved = lastDataReceived;
-								while (true) {
-									try {
-										dataMutex.wait(30000); // wait another 30s
-									} catch (InterruptedException e) {
-										e.printStackTrace();
-									}
-									if (dataMutex.length() > 0) {
-										break;
-									}
-									if (lastRecieved == lastDataReceived) {
-										// no data for last 30s
-										break;
-									}
-								}
-							} // else no data
+					}
+				} // end of synchronized(mutex)
+				while (!callbacks.isEmpty()) {
+					Integer state = callbacks.remove();
+					if (state != null) {
+						int stateValue = state.intValue();
+						if (stateValue == 1) {
+							if (onreadystatechange != null) onreadystatechange.onOpen();
+						} else if (stateValue == 2) {
+							if (onreadystatechange != null) onreadystatechange.onSent();
+						} else if (stateValue == 3) {
+							if (onreadystatechange != null) onreadystatechange.onReceiving();
+						} else if (stateValue == 4) {
+							if (onreadystatechange != null) onreadystatechange.onLoaded();
+							onreadystatechange = null;
+							if (dataMutex.length() <= 0) {
+								dataMutex.append('1');
+							}
 						}
 					}
 				}
-			}
+				if (dataMutex.length() >= 1) {
+					if (decoder != null && decoder.code != 0) {
+						// Already got HTTP header
+						if (decoder.code / 300 == 1 && dataMutex.length() > 1) {
+							String url = dataMutex.toString();
+							request = new HttpRequestItem(url);
+							if (key.equalsIgnoreCase(request.host + ":" + request.port)) {
+								open("GET", url, false, user, password);
+							} else {
+								open("GET", url, false);
+							}
+							dataMutex.delete(0, dataMutex.length());
+							//str = null;
+							loopRedirecting = true;
+						} else  if (lastDataReceived > 0 && !decoder.isFullPacket()) {
+							long lastRecieved = lastDataReceived;
+							while (true) {
+								System.out.println("Wait another 30s...");
+								try {
+									dataMutex.wait(30000); // wait another 30s
+								} catch (InterruptedException e) {
+									e.printStackTrace();
+								}
+								if (dataMutex.length() > 0) {
+									break;
+								}
+								if (lastRecieved == lastDataReceived) {
+									// no data for last 30s
+									break;
+								}
+							}
+						} // else no data
+					}
+					break;
+				} // end if (dataMutex.length() >= 1)
+			} // end of while (!asynchronized)
 		} while (loopRedirecting);
 	}
 
-	protected String generateHttpRequest(boolean reusing) {
+	protected byte[] generateHttpRequest(boolean reusing) {
 		StringBuilder builder = new StringBuilder();
 		builder.append(method);
 		builder.append(" ");
@@ -297,9 +341,14 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 			} // else will be set later
 		}
 		
-		if (content != null && !"GET".equalsIgnoreCase(method)) {
+//		if (content != null && !"GET".equalsIgnoreCase(method)) {
+//			builder.append("Content-Length: ");
+//			builder.append(content.length());
+//			builder.append("\r\n");
+//		}
+		if (contentBytes != null && !"GET".equalsIgnoreCase(method)) {
 			builder.append("Content-Length: ");
-			builder.append(content.length());
+			builder.append(contentBytes.length);
 			builder.append("\r\n");
 		}
 		if (supportsKeepAlive) {
@@ -329,10 +378,14 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 			builder.append("\r\n");
 		}
 		builder.append("\r\n");
-		if (content != null && !"GET".equalsIgnoreCase(method)) {
-			builder.append(content);
+		byte[] headerBytes = builder.toString().getBytes(ISO_8859_1);
+		if (contentBytes == null || "GET".equalsIgnoreCase(method)) {
+			return headerBytes;
 		}
-		return builder.toString();
+		byte[] requestBytes = new byte[headerBytes.length + contentBytes.length];
+		System.arraycopy(headerBytes, 0, requestBytes, 0, headerBytes.length);
+		System.arraycopy(contentBytes, 0, requestBytes, headerBytes.length, contentBytes.length);
+		return requestBytes;
 	}
 
 	@Override
@@ -344,7 +397,12 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 			if (readyState != 4) {
 				readyState = 4;
 				if (onreadystatechange != null) {
-					onreadystatechange.onLoaded();
+					if (asynchronous) {
+						onreadystatechange.onLoaded();
+						onreadystatechange = null;
+					} else {
+						callbacks.add(readyState);
+					}
 				}
 			}
 			closeRequest();
@@ -361,7 +419,12 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 		if (readyState != 4) {
 			readyState = 4;
 			if (onreadystatechange != null) {
-				onreadystatechange.onLoaded();
+				if (asynchronous) {
+					onreadystatechange.onLoaded();
+					onreadystatechange = null;
+				} else {
+					callbacks.add(readyState);
+				}
 			}
 		}
 		closeRequest();
@@ -384,21 +447,39 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 	}
 
 	protected void sendRequest(NioConnector sessionMetadata, boolean reusing) {
+		if (sent) {
+			System.out.println("!!!!!!!!!!!!!!!!");
+			System.out.println("Already sent!!!!");
+			new RuntimeException("Request is being sent multiple times!").printStackTrace();
+			return;
+		}
+		sent = true;
+
 		readyState = 1;
 		if (onreadystatechange != null) {
-			onreadystatechange.onOpen();
+			if (asynchronous) {
+				onreadystatechange.onOpen();
+			} else {
+				callbacks.add(readyState);
+				syncNotifyOnly();
+			}
 		}
-		String requestData = content;
+		byte[] requestData = contentBytes;
 		if (!isDirectSocket) {
 			requestData = generateHttpRequest(reusing);
 		}
 		try {
 			receiving = initializeReceivingMonitor();
-			sessionMetadata.send(requestData.getBytes(ISO_8859_1));
-			if (onreadystatechange != null) {
-				onreadystatechange.onSent();
-			}
+			sessionMetadata.send(requestData);
 			readyState = 2;
+			if (onreadystatechange != null) {
+				if (asynchronous) {
+					onreadystatechange.onSent();
+				} else {
+					callbacks.add(readyState);
+					syncNotifyOnly();
+				}
+			}
 		} catch (IOException e) {
 			failed = true;
 			e.printStackTrace();
@@ -545,7 +626,12 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 		if (readyState != 3) {
 			readyState = 3;
 			if (onreadystatechange != null) {
-				onreadystatechange.onReceiving();
+				if (asynchronous) {
+					onreadystatechange.onReceiving();
+				} else {
+					callbacks.add(readyState);
+					syncNotifyOnly();
+				}
 			}
 		}
 
@@ -576,7 +662,7 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 				responseBAOS.write(buffer, offset, remaining);
 			}
 
-			if (!decoder.isFullPacket() || isCometConnection) {
+			if (!decoder.isFullPacket()/* || isCometConnection*/) {
 				return;
 			}
 		}
@@ -598,7 +684,12 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 		if (readyState != 4) {
 			readyState = 4;
 			if (onreadystatechange != null) {
-				onreadystatechange.onLoaded();
+				if (asynchronous) {
+					onreadystatechange.onLoaded();
+					onreadystatechange = null;
+				} else {
+					callbacks.add(readyState);
+				}
 			}
 		}
 
@@ -620,7 +711,12 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 		if (readyState != 4) {
 			readyState = 4;
 			if (onreadystatechange != null) {
-				onreadystatechange.onLoaded();
+				if (asynchronous) {
+					onreadystatechange.onLoaded();
+					onreadystatechange = null;
+				} else {
+					callbacks.add(readyState);
+				}
 			}
 		}
 		closeRequest();
@@ -636,6 +732,11 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 				dataMutex.append('1');
 				dataMutex.notify();
 			}
+		}
+	}
+	void syncNotifyOnly() {
+		synchronized (dataMutex) {
+			dataMutex.notify();
 		}
 	}
 
@@ -660,17 +761,7 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 					r.request = this.request;
 					r.dataMutex = new StringBuffer();
 				} else {
-					r.responseBytes = null;
-					r.responseBAOS = null;
-					r.responseText = null;
-					r.headers = null;
-					r.content = null;
-					r.onreadystatechange = null;
-					r.receiving = null;
-					r.url = null;
-					r.method = null;
-					r.user = null;
-					r.password = null;
+					//r.resetData();
 				}
 				synchronized (keepAliveMutex) {
 					List<NioHttpRequest> existedConns = keepAliveConns.get(key);
@@ -696,4 +787,18 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 		}
 	}
 	
+	/*private*/ void resetData() {
+		responseBytes = null;
+		responseBAOS = null;
+		responseText = null;
+		//headers = null;
+		content = null;
+		contentBytes = null;
+		onreadystatechange = null;
+		receiving = null;
+		url = null;
+		method = null;
+		user = null;
+		password = null;
+	}
 }
