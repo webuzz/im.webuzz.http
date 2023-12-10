@@ -330,7 +330,8 @@ public class HttpResponseDecoder implements ProtocolDecoder {
 					if (idx - lineBegin <= 1) {
 						lineBegin = idx + 1;
 						header = false;
-						if (!gotContentLength && !chunking && lineBegin >= availableDataLength) { // 304, ...
+						if ((!gotContentLength || contentLength == 0)
+								&& !chunking && lineBegin >= availableDataLength) { // 304, ...
 							gotContentLength = true;
 							contentLength = 0;
 							fullRequest = true;
@@ -587,6 +588,7 @@ public class HttpResponseDecoder implements ProtocolDecoder {
 		if (!firstLine && !header && !chunking
 				&& gotContentLength && contentLength == 0) {
 			dataSent = 0;
+			fullPacket = true;
 			return ByteBuffer.wrap(dummy); // OK
 		}
 
