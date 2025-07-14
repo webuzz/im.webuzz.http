@@ -3,6 +3,7 @@ package im.webuzz.nio;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
@@ -164,6 +165,8 @@ public class HttpResponseDecoder implements ProtocolDecoder {
 	public ByteBuffer decode(ByteBuffer bb) {
 		if (plainSimple) {
 			if (!fullPacket) {
+				fullPacket = true;
+				fullRequest = true; // Force marking HTTP packet as full
 				if (bb == null) {
 					if (dataSent > 0) {
 						return null;
@@ -217,12 +220,16 @@ public class HttpResponseDecoder implements ProtocolDecoder {
 				ByteBuffer response = baosSize == 0 ? ByteBuffer.wrap(dummy) : ungzip(baos.getByteArray(), 0, baosSize);
 				baos = null;
 				dataSent = 1;
+				fullPacket = true;
+				fullRequest = true; // Force marking HTTP packet as full
 				return response;
 			}
 			if (dataSent >= 0 && fullPacket) {
 				return null; // already sent data packet or dummy packet
 			}
 			dataSent = 0;
+			fullPacket = true;
+			fullRequest = true; // Force marking HTTP packet as full
 			return ByteBuffer.wrap(dummy);
 		}
 		int availableDataLength = bb.remaining();
@@ -491,6 +498,8 @@ public class HttpResponseDecoder implements ProtocolDecoder {
 						//... response chunk is completed.
 						if (chunkedSize == 0) {
 							fullRequest = true;
+							lineBegin += chunkedSize + 2;
+							idx = lineBegin; // leap forward
 							break; // for while loop
 						}
 						if (baos == null) {
@@ -635,6 +644,9 @@ public class HttpResponseDecoder implements ProtocolDecoder {
 			while ((read = gis.read(buffer)) > 0) {
 				baos.write(buffer, 0, read);
 			}
+		} catch (EOFException e) {
+			// https://developercommunity.visualstudio.com/spaces/41/index.html
+			// does not return EOS
 		} catch (Throwable e) {
 			e.printStackTrace();
 			error = true;
