@@ -154,6 +154,9 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 		if (responseHeaders != null) {
 			return responseHeaders.get(key);
 		}
+		if ("Content-Type".equalsIgnoreCase(key)) {
+			return responseType;
+		}
 		return null;
 	}
 
@@ -746,7 +749,7 @@ public class NioHttpRequest extends HttpRequest implements INioListener {
 	
 	void closeRequest(boolean cloneRequest) {
 		String key = request.host + ":" + request.port;
-		this.responseHeaders = null;
+		//this.responseHeaders = null; // #getResponseHeader may be invoked after #closeRequest
 		if (connector != null) {
 			if (supportsKeepAlive && !connector.isClosed()
 					&& decoder != null && decoder.keepAliveMax > 0) {
